@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-display), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Brand: a single confident cobalt. Everything else stays neutral. */
+  --color-brand-50: #eef3ff;
+  --color-brand-100: #dbe5ff;
+  --color-brand-200: #bdcfff;
+  --color-brand-300: #90aeff;
+  --color-brand-400: #5b83fb;
+  --color-brand-500: #355ff3;
+  --color-brand-600: #2149e0;
+  --color-brand-700: #1b3ac0;
+  --color-brand-800: #1b329b;
+  --color-brand-900: #1c2f7a;
+  --color-brand-950: #131d4a;
+
+  /* Neutrals with a touch of cool ink. */
+  --color-ink-50: #f7f8fa;
+  --color-ink-100: #eff1f4;
+  --color-ink-200: #e1e5eb;
+  --color-ink-300: #c9cfd8;
+  --color-ink-400: #98a1ae;
+  --color-ink-500: #6b7484;
+  --color-ink-600: #4d5563;
+  --color-ink-700: #383e4a;
+  --color-ink-800: #23272f;
+  --color-ink-900: #14171d;
+  --color-ink-950: #0b0d11;
+
+  --color-success-50: #ecfdf3;
+  --color-success-100: #d3f8e0;
+  --color-success-600: #1a8a4f;
+  --color-success-700: #166f41;
+  --color-warning-50: #fff8e6;
+  --color-warning-100: #ffeec2;
+  --color-warning-700: #8a5a00;
+  --color-danger-50: #fef2f2;
+  --color-danger-100: #fde3e3;
+  --color-danger-600: #d12f2f;
+  --color-danger-700: #b02222;
+
+  --shadow-card: 0 1px 2px rgb(20 23 29 / 0.04), 0 1px 3px rgb(20 23 29 / 0.06);
+  --shadow-float: 0 12px 40px -12px rgb(20 23 29 / 0.18), 0 2px 6px rgb(20 23 29 / 0.06);
+  --shadow-ring: 0 0 0 4px var(--color-brand-100);
+
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.125rem;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #ffffff;
+  color: var(--color-ink-800);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+/* Subtle grid backdrop used on the marketing hero. */
+.hero-grid {
+  background-image:
+    linear-gradient(to right, rgb(20 23 29 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(20 23 29 / 0.045) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+/* Timeline rail dots pulse gently for the "next" item. */
+@keyframes loop-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(53 95 243 / 0.35); }
+  50% { box-shadow: 0 0 0 8px rgb(53 95 243 / 0); }
+}
+.loop-pulse {
+  animation: loop-pulse 2.2s ease-out infinite;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rise {
+  animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.rise-1 { animation-delay: 60ms; }
+.rise-2 { animation-delay: 140ms; }
+.rise-3 { animation-delay: 220ms; }
+.rise-4 { animation-delay: 300ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .loop-pulse, .rise { animation: none; }
+  html { scroll-behavior: auto; }
+}
+
+/* Focus rings that are visible for keyboard users but not on mouse click. */
+:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 2px;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
