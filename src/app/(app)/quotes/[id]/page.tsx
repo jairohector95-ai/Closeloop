@@ -27,6 +27,7 @@ export default function QuoteDetailPage({ params }: { params: Promise<{ id: stri
   const justCreated = searchParams.get("created") === "1";
   const account = useAppStore((s) => s.account);
   const data = useAppStore((s) => s.data);
+  const retryFollowUp = useAppStore((s) => s.retryFollowUp);
   const today = useAppStore((s) => s.simulatedDate ?? todayISO());
 
   const quote = data.quotes.find((q) => q.id === id);
@@ -48,12 +49,15 @@ export default function QuoteDetailPage({ params }: { params: Promise<{ id: stri
       return { event, followUp, email };
     });
 
+    const failed = data.followUps.filter((f) => f.quoteId === quote.id && f.status === "failed");
     const upcoming: UpcomingItem[] =
-      quote.status === "follow_up_scheduled"
-        ? pendingFollowUps(data, quote.id).map((followUp) => ({
-            followUp,
-            email: renderFollowUpEmail(buildEmailContext(quote, customer, ctx, followUp.sequenceNumber)),
-          }))
+      quote.status === "follow_up_scheduled" || quote.status === "awaiting_reply"
+        ? [...failed, ...pendingFollowUps(data, quote.id)]
+            .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+            .map((followUp) => ({
+              followUp,
+              email: renderFollowUpEmail(buildEmailContext(quote, customer, ctx, followUp.sequenceNumber)),
+            }))
         : [];
 
     return { items, upcoming };
@@ -124,7 +128,7 @@ export default function QuoteDetailPage({ params }: { params: Promise<{ id: stri
                 Follow-ups are paused. {pausedPending.length} still in the sequence. When you resume, any that fell behind are moved forward so the customer never gets a burst of emails.
               </div>
             ) : null}
-            <Timeline items={items} upcoming={upcoming} today={today} customerEmail={customer.email} />
+            <Timeline items={items} upcoming={upcoming} today={today} customerEmail={customer.email} onRetry={retryFollowUp} />
           </CardBody>
         </Card>
 

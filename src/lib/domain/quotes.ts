@@ -57,21 +57,39 @@ export function buildFollowUps(quote: Pick<Quote, "id" | "sentAt" | "schedule">,
   return quote.schedule
     .map((offset, index) => ({ offset, sequenceNumber: index + 1 }))
     .filter(({ sequenceNumber }) => sequenceNumber > alreadySent)
-    .map(({ offset, sequenceNumber }) => ({
-      id: createId("fu"),
-      quoteId: quote.id,
-      sequenceNumber,
-      scheduledFor: addDays(quote.sentAt, offset),
-      status: "scheduled" as const,
-      sentAt: null,
-      subject: null,
-      body: null,
-    }));
+    .map(({ offset, sequenceNumber }) => {
+      const id = createId("fu");
+      return {
+        id,
+        quoteId: quote.id,
+        sequenceNumber,
+        scheduledFor: addDays(quote.sentAt, offset),
+        status: "scheduled" as const,
+        sentAt: null,
+        subject: null,
+        body: null,
+        idempotencyKey: `${quote.id}:${sequenceNumber}:${id}`,
+        attempts: 0,
+        claimedAt: null,
+        nextAttemptAt: null,
+        lastError: null,
+        providerMessageId: null,
+        messageId: null,
+      };
+    });
 }
 
+/** Follow-ups that have not gone out yet (scheduled, or claimed by a worker mid-send). */
 export function pendingFollowUps(data: WorkspaceData, quoteId: string): FollowUp[] {
   return data.followUps
-    .filter((f) => f.quoteId === quoteId && f.status === "scheduled")
+    .filter((f) => f.quoteId === quoteId && (f.status === "scheduled" || f.status === "sending"))
+    .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+}
+
+/** Sent follow-ups for a quote, oldest first. */
+export function sentFollowUps(data: WorkspaceData, quoteId: string): FollowUp[] {
+  return data.followUps
+    .filter((f) => f.quoteId === quoteId && f.status === "sent")
     .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 }
 
@@ -110,6 +128,7 @@ export function addQuote(data: WorkspaceData, input: QuoteInput, ctx: DomainCont
     tone: input.tone,
     followUpsSent: 0,
     lastFollowUpSentOn: null,
+    emailThreadId: null,
     repliedAt: null,
     wonAt: null,
     lostAt: null,
@@ -132,6 +151,7 @@ export function addQuote(data: WorkspaceData, input: QuoteInput, ctx: DomainCont
 
   return {
     data: {
+      ...data,
       customers,
       quotes: [...data.quotes, quote],
       followUps: [...data.followUps, ...followUps],
@@ -185,6 +205,7 @@ export function updateQuote(data: WorkspaceData, quoteId: string, input: QuoteIn
   }
 
   const next: WorkspaceData = {
+    ...data,
     customers,
     quotes: data.quotes.map((q) => (q.id === quoteId ? quote : q)),
     followUps,
@@ -204,10 +225,11 @@ export function deleteQuote(data: WorkspaceData, quoteId: string): WorkspaceData
   const quote = data.quotes.find((q) => q.id === quoteId);
   if (!quote) return data;
   const next: WorkspaceData = {
-    customers: data.customers,
+    ...data,
     quotes: data.quotes.filter((q) => q.id !== quoteId),
     followUps: data.followUps.filter((f) => f.quoteId !== quoteId),
     timeline: data.timeline.filter((e) => e.quoteId !== quoteId),
+    inbound: data.inbound.map((i) => (i.quoteId === quoteId ? { ...i, quoteId: null } : i)),
   };
   return pruneOrphanCustomers(next, quote.customerId);
 }

@@ -31,7 +31,12 @@ function patchQuote(data: WorkspaceData, quoteId: string, patch: Partial<Quote>,
   };
 }
 
-export function markReplied(data: WorkspaceData, quoteId: string, ctx: DomainContext): WorkspaceData {
+export function markReplied(
+  data: WorkspaceData,
+  quoteId: string,
+  ctx: DomainContext,
+  options: { description?: string; title?: string } = {},
+): WorkspaceData {
   const quote = data.quotes.find((q) => q.id === quoteId);
   if (!quote || quote.status === "replied") return data;
   let next = cancelPending(data, quoteId);
@@ -40,7 +45,9 @@ export function markReplied(data: WorkspaceData, quoteId: string, ctx: DomainCon
     ...next,
     timeline: [
       ...next.timeline,
-      makeEvent(quoteId, "replied", "Customer replied", ctx.now, { description: "Follow-ups stopped." }),
+      makeEvent(quoteId, "replied", options.title ?? "Customer replied", ctx.now, {
+        description: options.description ?? "Follow-ups stopped.",
+      }),
     ],
   };
 }

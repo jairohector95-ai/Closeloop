@@ -113,7 +113,7 @@ const SCRIPTS: DemoScript[] = [
   },
 ];
 
-const EMPTY: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [] };
+const EMPTY: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [], inbound: [] };
 
 function quoteNumber(index: number, today: ISODate): string {
   const year = today.slice(0, 4);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runAutomation, countDue } from "@/lib/domain/automation";
+import { runAutomation, countDue, claimFollowUp, recordFailure, recordDelivery, retryFollowUp } from "@/lib/domain/automation";
 import { markLost, markReplied, markWon, pauseQuote, resumeQuote } from "@/lib/domain/status";
 import { ctxOn, followUpsOf, quoteOf, runDaily, seedQuote, TODAY } from "./helpers";
 import { addDays } from "@/lib/utils/date";
@@ -145,6 +145,70 @@ describe("automation engine", () => {
     expect(followUpsOf(after, quoteId).map((f) => f.status)).toEqual(["sent", "sent", "sent"]);
     expect(followUpsOf(after, quoteId).map((f) => f.sentAt?.slice(0, 10))).toEqual(["2026-09-16", "2026-09-19", "2026-09-24"]);
     expect(countDue(after, ctxOn(addDays(TODAY, 61)))).toBe(0);
+  });
+
+  it("claim is exclusive: a claimed follow-up cannot be claimed again until the claim goes stale", () => {
+    const { data, quoteId } = seedQuote(TODAY);
+    const day2 = ctxOn(addDays(TODAY, 2));
+    const first = followUpsOf(data, quoteId)[0];
+    const claimed = claimFollowUp(data, first.id, day2);
+    expect(claimed).not.toBeNull();
+    expect(claimFollowUp(claimed!, first.id, day2)).toBeNull();
+    // 20 minutes later the claim is stale (worker died) and may be retried.
+    const later = { ...day2, now: new Date(new Date(day2.now).getTime() + 20 * 60_000).toISOString() };
+    expect(claimFollowUp(claimed!, first.id, later)).not.toBeNull();
+  });
+
+  it("retries a failed send with backoff and gives up after the maximum attempts", () => {
+    const { data, quoteId } = seedQuote(TODAY);
+    let ctx = ctxOn(addDays(TODAY, 2));
+    const first = followUpsOf(data, quoteId)[0];
+    let state = data;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const claimed = claimFollowUp(state, first.id, ctx);
+      expect(claimed, `attempt ${attempt} should be claimable`).not.toBeNull();
+      state = recordFailure(claimed!, first.id, "provider 503", ctx);
+      const fu = followUpsOf(state, quoteId)[0];
+      if (attempt < 5) {
+        expect(fu.status).toBe("scheduled");
+        expect(fu.nextAttemptAt).not.toBeNull();
+        // Not due again until the backoff has elapsed.
+        expect(claimFollowUp(state, first.id, ctx)).toBeNull();
+        ctx = { ...ctx, now: new Date(new Date(fu.nextAttemptAt as string).getTime() + 1000).toISOString() };
+      } else {
+        expect(fu.status).toBe("failed");
+        expect(fu.lastError).toBe("provider 503");
+      }
+    }
+    expect(state.timeline.some((e) => e.type === "follow_up_failed")).toBe(true);
+    expect(quoteOf(state, quoteId).followUpsSent).toBe(0);
+    // Owner retries: it is scheduled for today again and can be delivered.
+    const retried = retryFollowUp(state, first.id, ctx);
+    expect(followUpsOf(retried, quoteId)[0].status).toBe("scheduled");
+    const run = runAutomation(retried, ctx);
+    expect(run.fired).toHaveLength(1);
+  });
+
+  it("a delivery that completes after the quote was stopped is recorded but does not reactivate the quote", () => {
+    const { data, quoteId } = seedQuote(TODAY);
+    const ctx = ctxOn(addDays(TODAY, 2));
+    const first = followUpsOf(data, quoteId)[0];
+    const claimed = claimFollowUp(data, first.id, ctx)!;
+    const replied = markReplied(claimed, quoteId, ctx);
+    const done = recordDelivery(replied, first.id, { providerMessageId: "p1", messageId: "<m1@x>", threadId: "t1", subject: "s", body: "b" }, ctx);
+    expect(quoteOf(done, quoteId).status).toBe("replied");
+    expect(quoteOf(done, quoteId).followUpsSent).toBe(1);
+    expect(followUpsOf(done, quoteId)[0].status).toBe("sent");
+    // The remaining follow-ups were cancelled by the reply and never fire.
+    expect(runDaily(done, ctx.today, addDays(ctx.today, 30)).firedTotal).toBe(0);
+  });
+
+  it("threads later follow-ups onto the first email", () => {
+    const { data, quoteId } = seedQuote(TODAY);
+    const { data: after } = runDaily(data, TODAY, addDays(TODAY, 10));
+    const sent = followUpsOf(after, quoteId);
+    expect(sent.every((f) => f.messageId)).toBe(true);
+    expect(quoteOf(after, quoteId).emailThreadId).not.toBeNull();
   });
 
   it("only touches quotes belonging to the business in context", () => {

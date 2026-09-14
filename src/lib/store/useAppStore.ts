@@ -9,7 +9,8 @@ import { createId } from "../utils/id";
 import { createContext } from "../domain/context";
 import * as quotes from "../domain/quotes";
 import * as status from "../domain/status";
-import { runAutomation, type FiredFollowUp } from "../domain/automation";
+import { retryFollowUp, runAutomation, type FiredFollowUp } from "../domain/automation";
+import { recordInboundEmail, type InboundEmailInput } from "../domain/replies";
 import { getEmailProvider } from "../email/provider";
 import { buildDemoPlatformAccounts, buildDemoWorkspace } from "../demo/seed";
 import type { PlatformAccount } from "../metrics";
@@ -58,6 +59,9 @@ interface AppState {
   pauseQuote: (id: string) => void;
   resumeQuote: (id: string) => void;
   reopenQuote: (id: string) => void;
+  retryFollowUp: (followUpId: string) => void;
+  /** Logs an email the customer sent (manual entry in Phase 1; webhooks/mailbox sync later). */
+  logReply: (input: InboundEmailInput) => { quoteId: string | null; stoppedSequence: boolean };
 
   // Automation & simulation
   runAutomation: () => AutomationRunSummary;
@@ -72,7 +76,7 @@ interface AppState {
   setHydrated: (value: boolean) => void;
 }
 
-const EMPTY_DATA: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [] };
+const EMPTY_DATA: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [], inbound: [] };
 
 const emailProvider = getEmailProvider();
 
@@ -163,12 +167,18 @@ export const useAppStore = create<AppState>()(
         pauseQuote: (id) => mutate((d) => status.pauseQuote(d, id, ctx())),
         resumeQuote: (id) => mutate((d) => status.resumeQuote(d, id, ctx())),
         reopenQuote: (id) => mutate((d) => status.reopenQuote(d, id, ctx())),
+        retryFollowUp: (followUpId) => mutate((d) => retryFollowUp(d, followUpId, ctx())),
+        logReply: (input) => {
+          const result = recordInboundEmail(get().data, input, ctx());
+          set({ data: result.data });
+          return { quoteId: result.match.quoteId, stoppedSequence: result.stoppedSequence };
+        },
 
         runAutomation: () => {
           const context = ctx();
           const result = runAutomation(get().data, context);
           // Phase 1: the simulated provider records the message and never sends anything.
-          result.fired.forEach((f) => void emailProvider.send(f.message));
+          result.fired.forEach((f) => void emailProvider.send(f.message, { from: "simulated@closeloop.local" }));
           const summary: AutomationRunSummary = {
             ranOn: context.today,
             ranAt: new Date().toISOString(),
@@ -214,6 +224,7 @@ export const useAppStore = create<AppState>()(
               quotes: [...data.quotes, ...demo.quotes],
               followUps: [...data.followUps, ...demo.followUps],
               timeline: [...data.timeline, ...demo.timeline],
+              inbound: [...data.inbound, ...demo.inbound],
             },
           });
         },
@@ -229,6 +240,7 @@ export const useAppStore = create<AppState>()(
                 quotes: remainingQuotes,
                 followUps: s.data.followUps.filter((f) => !demoQuoteIds.has(f.quoteId)),
                 timeline: s.data.timeline.filter((e) => !demoQuoteIds.has(e.quoteId)),
+                inbound: s.data.inbound.filter((i) => !i.quoteId || !demoQuoteIds.has(i.quoteId)),
               },
               lastRun: null,
             };
@@ -240,8 +252,9 @@ export const useAppStore = create<AppState>()(
     },
     {
       name: STORAGE_KEY,
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => createLocalStorageAdapter()),
+      migrate: (persisted, version) => migratePersistedState(persisted, version),
       partialize: (s) => ({
         account: s.account,
         data: s.data,
@@ -255,6 +268,32 @@ export const useAppStore = create<AppState>()(
     },
   ),
 );
+
+/**
+ * Upgrades older localStorage snapshots. Version 1 (first MVP) had no delivery
+ * bookkeeping on follow-ups, no inbound emails and no thread id on quotes.
+ */
+export function migratePersistedState(persisted: unknown, version: number): unknown {
+  if (!persisted || typeof persisted !== "object") return persisted;
+  const state = persisted as { data?: Partial<WorkspaceData> & { followUps?: Array<Record<string, unknown>>; quotes?: Array<Record<string, unknown>> } };
+  if (version < 2 && state.data) {
+    state.data.inbound = state.data.inbound ?? [];
+    state.data.followUps = (state.data.followUps ?? []).map((f) => {
+      const defaults: Record<string, unknown> = {
+        idempotencyKey: `${f.quoteId}:${f.sequenceNumber}:${f.id}`,
+        attempts: f.status === "sent" ? 1 : 0,
+        claimedAt: null,
+        nextAttemptAt: null,
+        lastError: null,
+        providerMessageId: f.status === "sent" ? `sim_${f.id}` : null,
+        messageId: f.status === "sent" ? `<${String(f.id).replace(/[^a-zA-Z0-9]/g, "")}@closeloop.local>` : null,
+      };
+      return { ...defaults, ...f };
+    });
+    state.data.quotes = (state.data.quotes ?? []).map((q) => ({ ...({ emailThreadId: null } as Record<string, unknown>), ...q }));
+  }
+  return persisted;
+}
 
 /** True once the persisted state has been read from storage (client only). */
 export function useHydrated(): boolean {

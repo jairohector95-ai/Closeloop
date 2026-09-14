@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarPlus, CheckCircle2, ChevronDown, FilePlus2, Mail, MailCheck, Pause, Play, Pencil, RotateCcw, Trophy, XCircle } from "lucide-react";
+import { AlertTriangle, CalendarPlus, CheckCircle2, ChevronDown, FilePlus2, Loader2, Mail, MailCheck, MessageSquareReply, Pause, Play, Pencil, RotateCcw, Trophy, XCircle } from "lucide-react";
 import type { FollowUp, TimelineEvent, TimelineEventType } from "@/lib/types";
 import type { GeneratedEmail } from "@/lib/email/templates";
 import { formatLong, formatShort } from "@/lib/utils/date";
@@ -14,6 +14,8 @@ const ICONS: Record<TimelineEventType, { icon: typeof Mail; className: string }>
   follow_up_scheduled: { icon: CalendarPlus, className: "bg-brand-50 text-brand-700" },
   follow_up_rescheduled: { icon: CalendarPlus, className: "bg-brand-50 text-brand-700" },
   follow_up_sent: { icon: MailCheck, className: "bg-brand-600 text-white" },
+  follow_up_failed: { icon: AlertTriangle, className: "bg-danger-100 text-danger-700" },
+  reply_detected: { icon: MessageSquareReply, className: "bg-success-50 text-success-700" },
   replied: { icon: CheckCircle2, className: "bg-success-600 text-white" },
   won: { icon: Trophy, className: "bg-ink-900 text-white" },
   lost: { icon: XCircle, className: "bg-danger-100 text-danger-700" },
@@ -53,7 +55,19 @@ function EmailToggle({ email, label, to }: { email: GeneratedEmail; label: strin
   );
 }
 
-export function Timeline({ items, upcoming, today, customerEmail }: { items: TimelineItem[]; upcoming: UpcomingItem[]; today: string; customerEmail: string }) {
+export function Timeline({
+  items,
+  upcoming,
+  today,
+  customerEmail,
+  onRetry,
+}: {
+  items: TimelineItem[];
+  upcoming: UpcomingItem[];
+  today: string;
+  customerEmail: string;
+  onRetry?: (followUpId: string) => void;
+}) {
   // Group by day so the list reads like a story rather than a log.
   const groups: { day: string; items: TimelineItem[] }[] = [];
   for (const item of items) {
@@ -97,25 +111,45 @@ export function Timeline({ items, upcoming, today, customerEmail }: { items: Tim
             {upcoming.map(({ followUp, email }, index) => {
               const overdue = followUp.scheduledFor < today;
               const dueToday = followUp.scheduledFor === today;
+              const failed = followUp.status === "failed";
+              const sending = followUp.status === "sending";
               return (
                 <li key={followUp.id} className="relative flex gap-4">
                   <span
                     className={cn(
-                      "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-dashed bg-white ring-4 ring-white",
-                      index === 0 ? "border-brand-400 text-brand-600" : "border-ink-300 text-ink-400",
-                      index === 0 && "loop-pulse",
+                      "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 bg-white ring-4 ring-white",
+                      failed ? "border-danger-600 text-danger-700" : sending ? "border-brand-400 text-brand-600" : "border-dashed",
+                      !failed && !sending && (index === 0 ? "border-brand-400 text-brand-600" : "border-ink-300 text-ink-400"),
+                      !failed && !sending && index === 0 && "loop-pulse",
                     )}
                   >
-                    <Mail className="h-3.5 w-3.5" />
+                    {failed ? <AlertTriangle className="h-3.5 w-3.5" /> : sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
                   </span>
                   <div className="min-w-0 flex-1 pt-1">
                     <p className="text-sm font-medium text-ink-900">
                       Follow-up #{followUp.sequenceNumber}
-                      <span className={cn("ml-2 text-sm font-normal", overdue || dueToday ? "text-brand-700" : "text-ink-500")}>
-                        {dueToday ? "due today" : overdue ? `was due ${formatShort(followUp.scheduledFor)} · sends on next run` : formatLong(followUp.scheduledFor)}
+                      <span className={cn("ml-2 text-sm font-normal", failed ? "text-danger-700" : overdue || dueToday ? "text-brand-700" : "text-ink-500")}>
+                        {failed
+                          ? "could not be sent"
+                          : sending
+                            ? "sending…"
+                            : dueToday
+                              ? "due today"
+                              : overdue
+                                ? `was due ${formatShort(followUp.scheduledFor)} · sends on next run`
+                                : formatLong(followUp.scheduledFor)}
                       </span>
                     </p>
-                    <EmailToggle email={email} label="Preview email" to={customerEmail} />
+                    {failed && followUp.lastError ? <p className="text-sm text-ink-500">{followUp.lastError}</p> : null}
+                    {followUp.nextAttemptAt && !failed && !sending ? <p className="text-sm text-ink-500">Retrying automatically after a temporary delivery problem.</p> : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <EmailToggle email={email} label="Preview email" to={customerEmail} />
+                      {failed && onRetry ? (
+                        <button type="button" onClick={() => onRetry(followUp.id)} className="mt-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px] font-medium text-danger-700 hover:bg-danger-50">
+                          <RotateCcw className="h-3.5 w-3.5" /> Try again
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </li>
               );

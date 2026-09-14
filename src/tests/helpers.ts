@@ -30,7 +30,7 @@ export const account: Account = {
   },
 };
 
-export const empty: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [] };
+export const empty: WorkspaceData = { customers: [], quotes: [], followUps: [], timeline: [], inbound: [] };
 
 export function ctxOn(date: string): DomainContext {
   return createContext(account.business, account.settings, date);

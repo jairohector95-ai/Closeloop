@@ -31,7 +31,13 @@ export type QuoteStatus =
   | "lost"
   | "paused";
 
-export type FollowUpStatus = "scheduled" | "sent" | "cancelled";
+/**
+ * scheduled → sending (claimed by a worker) → sent | failed
+ * scheduled → cancelled (quote stopped)
+ * A follow-up that fails a transient send goes back to "scheduled" with a
+ * `nextAttemptAt`; after MAX_SEND_ATTEMPTS it becomes "failed".
+ */
+export type FollowUpStatus = "scheduled" | "sending" | "sent" | "failed" | "cancelled";
 
 export type TimelineEventType =
   | "quote_added"
@@ -39,6 +45,8 @@ export type TimelineEventType =
   | "follow_up_scheduled"
   | "follow_up_sent"
   | "follow_up_rescheduled"
+  | "follow_up_failed"
+  | "reply_detected"
   | "replied"
   | "won"
   | "lost"
@@ -47,6 +55,10 @@ export type TimelineEventType =
   | "reopened";
 
 export type PlanId = "trial" | "starter" | "pro";
+
+export type MailboxProviderId = "gmail" | "outlook";
+export type MailboxConnectionStatus = "connected" | "needs_reauth" | "disconnected";
+export type InboundSource = "manual" | "provider_webhook" | "gmail" | "outlook";
 
 export type SubscriptionStatus = "inactive" | "trialing" | "active" | "past_due" | "cancelled";
 
@@ -119,6 +131,8 @@ export interface Quote {
   followUpsSent: number;
   /** Calendar date of the most recent follow-up sent. Guards against double sends. */
   lastFollowUpSentOn: ISODate | null;
+  /** Provider thread id (Gmail threadId / Graph conversationId) once the first email is out. */
+  emailThreadId: string | null;
   repliedAt: ISODateTime | null;
   wonAt: ISODateTime | null;
   lostAt: ISODateTime | null;
@@ -138,6 +152,52 @@ export interface FollowUp {
   /** Snapshot of the email that was actually sent (null until sent). */
   subject: string | null;
   body: string | null;
+  /** Stable key handed to the email provider so a retried send can never duplicate. */
+  idempotencyKey: string;
+  /** Delivery bookkeeping. */
+  attempts: number;
+  claimedAt: ISODateTime | null;
+  nextAttemptAt: ISODateTime | null;
+  lastError: string | null;
+  /** Ids returned by the provider after a successful send. */
+  providerMessageId: string | null;
+  /** RFC 5322 Message-ID of the sent email, used to match replies. */
+  messageId: string | null;
+}
+
+/** An email that came back from a customer (or was logged manually). */
+export interface InboundEmail {
+  id: string;
+  businessId: string;
+  /** Null when we could not match it to a quote. */
+  quoteId: string | null;
+  source: InboundSource;
+  fromEmail: string;
+  fromName: string | null;
+  subject: string | null;
+  /** Reply text with quoted history stripped. */
+  snippet: string | null;
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string[];
+  threadId: string | null;
+  receivedAt: ISODateTime;
+}
+
+/** A contractor's connected mailbox. Tokens are never stored in this record; see mailbox_credentials in the DB schema. */
+export interface MailboxConnection {
+  id: string;
+  businessId: string;
+  provider: MailboxProviderId;
+  emailAddress: string;
+  status: MailboxConnectionStatus;
+  scopes: string[];
+  /** Provider-specific watch/subscription id for reply notifications. */
+  watchId: string | null;
+  watchExpiresAt: ISODateTime | null;
+  connectedAt: ISODateTime;
+  lastSyncedAt: ISODateTime | null;
+  lastError: string | null;
 }
 
 export interface TimelineEvent {
@@ -156,6 +216,7 @@ export interface WorkspaceData {
   quotes: Quote[];
   followUps: FollowUp[];
   timeline: TimelineEvent[];
+  inbound: InboundEmail[];
 }
 
 export interface Account {
@@ -172,6 +233,14 @@ export interface EmailMessage {
   replyTo: string;
   subject: string;
   body: string;
+  /** Provider idempotency key (same as FollowUp.idempotencyKey). */
+  idempotencyKey: string;
+  /** Threading headers so follow-ups land in the same conversation. */
+  inReplyTo: string | null;
+  references: string[];
+  threadId: string | null;
+  /** Free-form tags for provider metadata / webhooks (e.g. quoteId, followUpId). */
+  tags: Record<string, string>;
 }
 
 export interface QuoteInput {

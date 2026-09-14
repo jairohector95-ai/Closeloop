@@ -77,3 +77,10 @@ export function planById(id: PlanId): Plan {
 export const TRIAL_DAYS = 14;
 
 export const STORAGE_KEY = "closeloop:workspace:v1";
+
+/** How many times we try to hand a follow-up to the email provider before marking it failed. */
+export const MAX_SEND_ATTEMPTS = 5;
+/** Minutes to wait before retrying a failed send, per attempt (1st retry, 2nd, ...). */
+export const RETRY_BACKOFF_MINUTES = [5, 15, 60, 240];
+/** A "sending" claim older than this is considered abandoned (worker crashed) and may be retried. */
+export const CLAIM_TIMEOUT_MINUTES = 15;
