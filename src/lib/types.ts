@@ -133,6 +133,8 @@ export interface Quote {
   lastFollowUpSentOn: ISODate | null;
   /** Provider thread id (Gmail threadId / Graph conversationId) once the first email is out. */
   emailThreadId: string | null;
+  /** Random, unguessable token used in this quote's Reply-To address. Never a sequential id. */
+  replyToken: string;
   repliedAt: ISODateTime | null;
   wonAt: ISODateTime | null;
   lostAt: ISODateTime | null;
@@ -152,6 +154,7 @@ export interface FollowUp {
   /** Snapshot of the email that was actually sent (null until sent). */
   subject: string | null;
   body: string | null;
+  recipientEmail: string | null;
   /** Stable key handed to the email provider so a retried send can never duplicate. */
   idempotencyKey: string;
   /** Delivery bookkeeping. */
@@ -229,10 +232,17 @@ export interface Account {
 export interface EmailMessage {
   to: string;
   toName: string;
+  /** Display name, e.g. "ABC Painting via CloseLoop". */
   fromName: string;
+  /** Verified sender address the provider is allowed to send from. */
+  fromAddress: string;
+  /** Where replies go: the quote's unique reply routing address. */
   replyTo: string;
   subject: string;
+  /** Plain-text body (what we store). */
   body: string;
+  /** HTML rendering of the same body. */
+  html: string;
   /** Provider idempotency key (same as FollowUp.idempotencyKey). */
   idempotencyKey: string;
   /** Threading headers so follow-ups land in the same conversation. */

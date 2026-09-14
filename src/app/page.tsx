@@ -9,6 +9,7 @@ import { FAQ } from "@/components/marketing/FAQ";
 import { PLANS, DEFAULT_SCHEDULE } from "@/lib/constants";
 import { formatMoney } from "@/lib/utils/money";
 import { cn } from "@/lib/utils/cn";
+import { signInHref, startHref } from "@/lib/server/mode";
 
 const TRADES = ["Painters", "Pressure washers", "Landscapers", "Cleaners", "Pool companies", "Roofers", "Handymen", "Flooring", "HVAC", "Plumbers", "Electricians", "Remodelers"];
 
@@ -32,7 +33,7 @@ export default function HomePage() {
               CloseLoop automatically follows up on estimates you&apos;ve already sent, so more customers reply and fewer jobs slip through the cracks.
             </p>
             <div className="rise rise-3 mt-8 flex flex-col gap-3 sm:flex-row">
-              <ButtonLink href="/onboarding" size="lg" icon={<ArrowRight className="h-4 w-4" />}>
+              <ButtonLink href={startHref()} size="lg" icon={<ArrowRight className="h-4 w-4" />}>
                 Start free
               </ButtonLink>
               <ButtonLink href="#how-it-works" variant="outline" size="lg">
@@ -216,7 +217,7 @@ export default function HomePage() {
                     ))}
                   </ul>
                   <div className="mt-8">
-                    <ButtonLink href="/onboarding" variant={featured ? "primary" : "outline"} className="w-full">
+                    <ButtonLink href={startHref()} variant={featured ? "primary" : "outline"} className="w-full">
                       {plan.id === "trial" ? "Start free" : `Start with ${plan.name}`}
                     </ButtonLink>
                   </div>
@@ -243,7 +244,7 @@ export default function HomePage() {
           <h2 className="font-display text-3xl font-semibold sm:text-4xl lg:text-5xl">The next quote you send shouldn&apos;t be the last time they hear from you.</h2>
           <p className="mx-auto mt-4 max-w-xl text-lg text-ink-300">Set up takes a minute. Add one estimate and watch CloseLoop take it from there.</p>
           <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-            <ButtonLink href="/onboarding" size="lg" variant="inverted" icon={<ArrowRight className="h-4 w-4" />}>
+            <ButtonLink href={startHref()} size="lg" variant="inverted" icon={<ArrowRight className="h-4 w-4" />}>
               Start free
             </ButtonLink>
             <ButtonLink href="#how-it-works" size="lg" variant="ghost" className="text-white hover:bg-white/10">
@@ -269,7 +270,7 @@ export default function HomePage() {
             <a href="#faq" className="hover:text-ink-900">
               FAQ
             </a>
-            <Link href="/dashboard" className="hover:text-ink-900">
+            <Link href={signInHref()} className="hover:text-ink-900">
               Sign in
             </Link>
           </nav>

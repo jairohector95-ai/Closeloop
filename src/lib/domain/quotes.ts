@@ -1,6 +1,6 @@
 import type { Customer, FollowUp, Quote, QuoteInput, TimelineEvent, TimelineEventType, WorkspaceData } from "../types";
 import { addDays } from "../utils/date";
-import { createId } from "../utils/id";
+import { createId, createSecureToken } from "../utils/id";
 import { MAX_FOLLOW_UPS } from "../constants";
 import type { DomainContext } from "./context";
 
@@ -68,6 +68,7 @@ export function buildFollowUps(quote: Pick<Quote, "id" | "sentAt" | "schedule">,
         sentAt: null,
         subject: null,
         body: null,
+        recipientEmail: null,
         idempotencyKey: `${quote.id}:${sequenceNumber}:${id}`,
         attempts: 0,
         claimedAt: null,
@@ -129,6 +130,7 @@ export function addQuote(data: WorkspaceData, input: QuoteInput, ctx: DomainCont
     followUpsSent: 0,
     lastFollowUpSentOn: null,
     emailThreadId: null,
+    replyToken: createSecureToken(),
     repliedAt: null,
     wonAt: null,
     lostAt: null,

@@ -53,7 +53,21 @@ All business rules live in `src/lib/domain/` as pure functions with no UI or sto
 
 Tests for all of the above are in `src/tests/` (`npm test`).
 
+## Two modes
+
+- **Local mode** (default, nothing configured): everything in the browser, simulated email and calendar. What `npm run dev` gives you out of the box.
+- **Cloud mode** (Supabase + Resend configured): real accounts, Postgres with row-level security, a scheduler that sends real follow-ups through Resend, and inbound reply detection. Follow `docs/phase-2-setup.md` to turn it on. Same UI in both modes.
+
+Database tests (real Postgres, run against a scratch server):
+
+```bash
+PGHOST=/path/to/socket PGPORT=5432 PGUSER=postgres npm run test:db
+```
+
 ## Documentation
+
+- `docs/phase-2-setup.md`: the owner checklist to go live (Supabase, Resend, Vercel, scheduler).
+- `docs/security.md`: what is enforced where, and what to add before opening sign-ups widely.
 
 - `docs/open-source-audit.md`: licenses and fit of Dittofeed, Twenty, Mautic and ~30 other projects; what we reuse and what we must never copy.
 - `docs/current-architecture.md`: what is implemented, what is simulated, what must become production-ready.

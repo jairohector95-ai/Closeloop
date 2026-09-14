@@ -9,10 +9,12 @@ import { buildRawMime, encodeHeader, parseAddress, toBase64Url } from "@/lib/int
 const message: EmailMessage = {
   to: "sarah@example.com",
   toName: "Sarah Mitchell",
-  fromName: "Mike at ABC Painting",
-  replyTo: "mike@abcpainting.com",
+  fromName: "ABC Painting via CloseLoop",
+  fromAddress: "follow-ups@mail.closeloop.app",
+  replyTo: "reply+tokentokentokentokentokentok@reply.closeloop.app",
   subject: "Quick follow-up on your estimate",
   body: "Hi Sarah,\n\nJust checking in.",
+  html: "<p>Hi Sarah,</p><p>Just checking in.</p>",
   idempotencyKey: "quote_1:1:fu_1",
   inReplyTo: "<first@mail.closeloop.app>",
   references: ["<first@mail.closeloop.app>"],
@@ -32,7 +34,7 @@ function fakeFetch(status: number, body: unknown) {
 describe("email provider adapters", () => {
   it("Resend: sends the right request with idempotency and threading headers", async () => {
     const { fetchImpl, calls } = fakeFetch(200, { id: "re_123" });
-    const result = await new ResendEmailProvider("re_key", fetchImpl).send(message, { from: "follow-ups@mail.closeloop.app" });
+    const result = await new ResendEmailProvider("re_key", fetchImpl).send(message);
     expect(result.ok).toBe(true);
     expect(result.providerMessageId).toBe("re_123");
     expect(result.messageId).toBe(messageIdFor(message, "mail.closeloop.app"));
@@ -42,20 +44,22 @@ describe("email provider adapters", () => {
     const payload = JSON.parse(String(calls[0].init.body));
     expect(payload.headers["In-Reply-To"]).toBe("<first@mail.closeloop.app>");
     expect(payload.to).toEqual(['"Sarah Mitchell" <sarah@example.com>']);
-    expect(payload.reply_to).toBe("mike@abcpainting.com");
+    expect(payload.reply_to).toBe("reply+tokentokentokentokentokentok@reply.closeloop.app");
+    expect(payload.html).toContain("<p>");
+    expect(payload.from).toBe('"ABC Painting via CloseLoop" <follow-ups@mail.closeloop.app>');
   });
 
   it("Resend: marks 5xx as retryable and 4xx as not", async () => {
-    const bad = await new ResendEmailProvider("k", fakeFetch(503, { message: "down" }).fetchImpl).send(message, { from: "a@b.co" });
+    const bad = await new ResendEmailProvider("k", fakeFetch(503, { message: "down" }).fetchImpl).send(message);
     expect(bad.ok).toBe(false);
     expect(bad.retryable).toBe(true);
-    const rejected = await new ResendEmailProvider("k", fakeFetch(422, { message: "bad" }).fetchImpl).send(message, { from: "a@b.co" });
+    const rejected = await new ResendEmailProvider("k", fakeFetch(422, { message: "bad" }).fetchImpl).send(message);
     expect(rejected.retryable).toBe(false);
   });
 
   it("Postmark: sends with server token and metadata", async () => {
     const { fetchImpl, calls } = fakeFetch(200, { MessageID: "pm-1" });
-    const result = await new PostmarkEmailProvider("pm_token", fetchImpl).send(message, { from: "follow-ups@mail.closeloop.app" });
+    const result = await new PostmarkEmailProvider("pm_token", fetchImpl).send(message);
     expect(result.ok).toBe(true);
     expect(result.providerMessageId).toBe("pm-1");
     const headers = calls[0].init.headers as Record<string, string>;
@@ -137,7 +141,7 @@ describe("mailbox OAuth helpers", () => {
 describe("MIME builder", () => {
   it("produces a threaded RFC 5322 message", () => {
     const raw = buildRawMime(message, "mike@abcpainting.com", "<k1@abcpainting.com>", new Date("2026-09-14T12:00:00Z"));
-    expect(raw).toContain("From: \"Mike at ABC Painting\" <mike@abcpainting.com>");
+    expect(raw).toContain("From: \"ABC Painting via CloseLoop\" <mike@abcpainting.com>");
     expect(raw).toContain("In-Reply-To: <first@mail.closeloop.app>");
     expect(raw).toContain("Message-ID: <k1@abcpainting.com>");
     expect(raw.slice(raw.indexOf("\r\n\r\n") + 4)).toBe("Hi Sarah,\r\n\r\nJust checking in.");

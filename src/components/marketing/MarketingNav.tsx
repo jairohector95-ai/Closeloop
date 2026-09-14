@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Menu, X } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 import { ButtonLink } from "@/components/ui/Button";
+import { signInHref, startHref } from "@/lib/server/mode";
 
 const LINKS = [
   { href: "#how-it-works", label: "How it works" },
@@ -27,10 +28,10 @@ export function MarketingNav() {
           ))}
         </nav>
         <div className="hidden items-center gap-2 md:flex">
-          <ButtonLink href="/dashboard" variant="ghost" size="sm">
+          <ButtonLink href={signInHref()} variant="ghost" size="sm">
             Sign in
           </ButtonLink>
-          <ButtonLink href="/onboarding" size="sm">
+          <ButtonLink href={startHref()} size="sm">
             Start free
           </ButtonLink>
         </div>
@@ -48,10 +49,10 @@ export function MarketingNav() {
             ))}
           </nav>
           <div className="mt-3 flex gap-2">
-            <ButtonLink href="/dashboard" variant="outline" className="flex-1">
+            <ButtonLink href={signInHref()} variant="outline" className="flex-1">
               Sign in
             </ButtonLink>
-            <ButtonLink href="/onboarding" className="flex-1">
+            <ButtonLink href={startHref()} className="flex-1">
               Start free
             </ButtonLink>
           </div>

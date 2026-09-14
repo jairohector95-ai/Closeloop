@@ -1,10 +1,21 @@
-# Current architecture (after the Phase 1 hardening pass)
+# Current architecture (after Phase 2)
 
-_Date: 2026-09-14._ This describes the code as it is now: the Phase 1 local MVP plus the production-readiness work done in this pass.
+_Date: 2026-09-14._ This describes the code as it is now: the local MVP plus the Phase 2 cloud stack (Supabase auth + database, Resend outbound and inbound, scheduler).
 
 ## One-paragraph summary
 
-CloseLoop is a Next.js 16 / TypeScript / Tailwind app. All business rules live in a pure, tested domain layer (`src/lib/domain`) that operates on an immutable `WorkspaceData` snapshot. The browser store (Zustand + localStorage) is the only persistence today. Email delivery, background jobs, mailbox connections and the database are behind interfaces with working in-memory or simulated implementations, plus real adapters for Resend, Postmark, Gmail and Microsoft Graph that are written but not yet exercised against live accounts.
+CloseLoop is a Next.js 16 / TypeScript / Tailwind app with two modes chosen at build time. In **local mode** (no Supabase configured) everything lives in the browser with simulated email. In **cloud mode** the same UI talks to Supabase (Postgres with row-level security, email/password auth), the follow-up scheduler runs server-side and sends through Resend, and customer replies come back through Resend Inbound to a signed webhook that stops the sequence. All business rules live in one pure, tested domain layer (`src/lib/domain`) operating on an immutable `WorkspaceData` snapshot; the browser store and the server share it.
+
+## Cloud mode data flow
+
+```
+Browser (Zustand store) ── domain function ──▶ new snapshot ──▶ diffWorkspace ──▶ POST /api/workspace
+                                                                                    └─▶ apply_workspace_changes() (one transaction, RLS, business forced)
+Supabase Cron (15 min) ──▶ POST /api/jobs/sweep (bearer secret) ──▶ runSweepForAllDue
+        └─▶ per business: load → selectDue → claim_follow_up() → re-read → Resend send (idempotency key) → recordDelivery
+Customer replies ──▶ Resend Inbound ──▶ POST /api/webhooks/resend (Svix signature, delivery-id dedupe)
+        └─▶ fetch email → reply token from To address → recordInboundEmail → markReplied + cancel → forward to contractor
+```
 
 ## What is implemented and real
 
@@ -23,28 +34,25 @@ CloseLoop is a Next.js 16 / TypeScript / Tailwind app. All business rules live i
 | Inbound normalizers | `src/lib/integrations/inbound.ts` | Postmark and Resend inbound webhook payloads → common `InboundEmailInput` |
 | Mailbox integration scaffolding | `src/lib/integrations/mailbox/*` | `MailboxProvider` interface; OAuth URL / token / refresh builders with PKCE and minimal scopes; MIME builder; Gmail and Graph adapters (send, incremental reply sync, watch/subscription) |
 | Database schema | `supabase/migrations/0001_init.sql` | Full Postgres schema with RLS, the atomic `claim_follow_up()` function, encrypted-credential table |
-| Tests | `src/tests/*.test.ts` | 51 tests: engine, statuses, resume, dedupe, retries, sweep concurrency, reply matching, providers, OAuth helpers, MIME, change sets, demo data, metrics |
+| Cloud persistence | `src/lib/server/repository.ts`, `mappers.ts`, `changeset.ts`, `account.ts` | `SupabaseWorkspaceRepository` (load / apply change set / atomic claim), row mappers, server-side change-set validation |
+| Authentication | `src/proxy.ts`, `src/app/(auth)/*`, `src/app/auth/*`, `src/lib/server/auth.ts` | Supabase email + password, confirmation, forgot/reset password, sign out, protected routes |
+| API | `src/app/api/{workspace,account,jobs/sweep,jobs/run,webhooks/resend,admin/metrics}` | See data flow above |
+| Reply routing | `src/lib/email/routing.ts`, `quotes.reply_token` | `reply+<32-char random token>@<reply domain>` as Reply-To; token → quote |
+| Inbound | `src/lib/integrations/resend.ts`, `src/lib/server/inbound-handler.ts` | Svix verification, received-email normalisation, business resolution, reply forwarding |
+| Database | `supabase/migrations/0001_init.sql`, `supabase/test/*` | Schema, RLS, `create_business`, `load_workspace`, `apply_workspace_changes`, `claim_follow_up`, webhook dedupe, sweep log; SQL tests via `npm run test:db` |
+| Tests | `src/tests/*.test.ts` | 67 Vitest tests + SQL suite: engine, statuses, resume, dedupe, retries, sweep concurrency and reply race, reply-token/ambiguity matching, webhook verification, providers, change-set guards, mappers, demo data, metrics |
 
-## What is mocked or simulated
+## What is still simulated or pending
 
-| Thing | How it is simulated today | Becomes real in |
-| --- | --- | --- |
-| Sending email | `SimulatedEmailProvider` records the message; the UI shows exactly what would have been sent | Phase 3 (set `EMAIL_PROVIDER=resend` + key) |
-| Time | A simulated calendar on the dashboard ("Simulate next day", "Skip a week") runs the engine day by day | Phase 4 (cron runs the sweep every 15 minutes) |
-| Reply detection | "Mark as replied" button; `logReply` store action exists for manual entry | Phase 5a (inbound webhook) and 5b/5c (mailbox sync) |
-| Persistence | localStorage in the browser (one account per browser) | Phase 2 (Supabase repository implementing `WorkspaceRepository`) |
-| Authentication | `AppGate` checks for a local account | Phase 2 (Supabase Auth) |
-| Billing | Trial subscription record, "Coming in Phase 2" UI | Phase 6 (Stripe) |
-| Admin metrics | Local demo accounts | Phase 2+ (real tables) |
-| Gmail / Outlook | Adapters written against documented REST endpoints, unit-tested for request shape only | Phase 5b/5c (needs Google Cloud + Entra app registrations and verification) |
-
-## What must become production-ready (and is not yet)
-
-1. **A database-backed `WorkspaceRepository`.** The interface, diffing and the SQL schema exist; the Supabase implementation does not. The `tryClaimFollowUp` method must call the `claim_follow_up()` SQL function.
-2. **API routes**: `POST /api/jobs/sweep` (cron target, bearer `JOBS_SECRET`), `POST /api/webhooks/inbound/{postmark|resend}`, and later `/api/mailbox/{gmail|outlook}/{connect,callback,notify}`. Deliberately not added yet because they would be dead code without the repository.
-3. **Server-side config**: `.env.example` documents every variable; nothing reads secrets on the client.
-4. **Multi-business sweep**: `runFollowUpSweep` processes one workspace per call; the cron route will iterate businesses with active quotes.
-5. **Token encryption** for mailbox credentials (application-level AES-GCM or Supabase Vault) before Phase 5b.
+| Thing | Status |
+| --- | --- |
+| Local mode (no Supabase) | Fully simulated by design: browser storage, simulated email and calendar. Kept as the demo experience. |
+| Cloud mode without `RESEND_API_KEY` | Accounts, database and scheduler work; the sweep refuses to send and reports "Email sending is not configured" instead of pretending. |
+| Live verification | Cloud mode has been exercised with placeholder settings (redirects, pages, unauthenticated API responses) and the SQL suite ran on real Postgres. A full end-to-end run (real sign-up → real email → real reply) needs the owner's Supabase and Resend accounts; see `docs/phase-2-setup.md`. |
+| Billing | Trial subscription record only. Phase 6. |
+| Gmail / Outlook | Adapters and OAuth helpers exist, unit-tested for request shape; not wired to any UI. Deferred by product decision. |
+| Team accounts | One business per user (unique index). |
+| Rate limiting, Sentry | See `docs/security.md`. |
 
 ## What we deliberately did not replace with open source
 

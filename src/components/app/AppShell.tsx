@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { LayoutDashboard, FileText, Plus, Settings, Menu, X, CalendarClock } from "lucide-react";
+import { LayoutDashboard, FileText, Plus, Settings, Menu, X, CalendarClock, LogOut, AlertTriangle, Loader2 } from "lucide-react";
 import { Logo } from "@/components/ui/Logo";
 import { Badge } from "@/components/ui/Badge";
 import { ButtonLink } from "@/components/ui/Button";
@@ -22,8 +22,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const account = useAppStore((s) => s.account);
+  const mode = useAppStore((s) => s.mode);
   const simulatedDate = useAppStore((s) => s.simulatedDate);
   const resetClock = useAppStore((s) => s.resetClock);
+  const syncStatus = useAppStore((s) => s.syncStatus);
+  const syncError = useAppStore((s) => s.syncError);
 
   const isActive = (href: string) => pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
 
@@ -52,8 +55,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       <p className="truncate text-xs text-ink-500">{account.business.email}</p>
       <div className="mt-2.5 flex items-center gap-2">
         <Badge tone="brand">{planById(account.subscription.plan).name}</Badge>
-        <Badge tone="neutral">Demo mode</Badge>
+        {mode === "local" ? <Badge tone="neutral">Demo mode</Badge> : null}
       </div>
+      {mode === "cloud" ? (
+        <form action="/auth/signout" method="post" className="mt-3">
+          <button type="submit" className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-500 hover:text-ink-900">
+            <LogOut className="h-3.5 w-3.5" /> Sign out
+          </button>
+        </form>
+      ) : null}
     </div>
   ) : null;
 
@@ -86,7 +96,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Logo href="/dashboard" />
           </div>
           <div className="flex items-center gap-2">
-            {simulatedDate ? (
+            {mode === "cloud" && syncStatus === "saving" ? (
+              <span className="hidden items-center gap-1.5 text-xs text-ink-400 sm:inline-flex">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving
+              </span>
+            ) : null}
+            {mode === "local" && simulatedDate ? (
               <button
                 type="button"
                 onClick={resetClock}
@@ -105,6 +120,12 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
+        {syncStatus === "error" && syncError ? (
+          <div className="flex items-start gap-3 border-b border-danger-100 bg-danger-50 px-4 py-3 text-sm text-danger-700 sm:px-6">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{syncError}</span>
+          </div>
+        ) : null}
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">{children}</main>
       </div>
 

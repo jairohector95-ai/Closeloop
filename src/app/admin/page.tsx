@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Lock } from "lucide-react";
 import { useAppStore } from "@/lib/store/useAppStore";
-import { computeAdminMetrics } from "@/lib/metrics";
+import { computeAdminMetrics, type AdminMetrics } from "@/lib/metrics";
 import { PLANS, businessTypeLabel, planById } from "@/lib/constants";
 import { formatMoney } from "@/lib/utils/money";
 import { formatShort } from "@/lib/utils/date";
@@ -18,12 +19,25 @@ import { PageSkeleton } from "@/components/ui/Skeleton";
  * admin role and read from the real database.
  */
 export default function AdminPage() {
+  const mode = useAppStore((s) => s.mode);
   const hydrated = useAppStore((s) => s.hydrated);
   const account = useAppStore((s) => s.account);
   const demoAccounts = useAppStore((s) => s.demoAccounts);
   const data = useAppStore((s) => s.data);
+  const [cloud, setCloud] = useState<{ metrics: AdminMetrics; businesses: Array<Record<string, string>>; lastSweep: { ran_at: string; sent: number; failed: number } | null } | null>(null);
+  const [cloudError, setCloudError] = useState<string | null>(null);
 
-  const metrics = computeAdminMetrics(account, demoAccounts, data);
+  useEffect(() => {
+    if (mode !== "cloud") return;
+    fetch("/api/admin/metrics")
+      .then(async (res) => {
+        if (!res.ok) throw new Error(res.status === 403 ? "This page is for the CloseLoop owner only." : res.status === 401 ? "Sign in first." : "Couldn't load metrics.");
+        setCloud(await res.json());
+      })
+      .catch((e: Error) => setCloudError(e.message));
+  }, [mode]);
+
+  const metrics = mode === "cloud" && cloud ? cloud.metrics : computeAdminMetrics(account, demoAccounts, data);
   const accounts = [...(account ? [account] : []), ...demoAccounts];
 
   const planBreakdown = PLANS.map((p) => ({
@@ -48,16 +62,26 @@ export default function AdminPage() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-        {!hydrated ? (
+        {mode === "cloud" && cloudError ? (
+          <div className="rounded-2xl border border-ink-200 bg-white p-8 text-center shadow-card">
+            <p className="font-semibold text-ink-900">{cloudError}</p>
+          </div>
+        ) : (mode === "cloud" && !cloud) || !hydrated ? (
           <PageSkeleton />
         ) : (
           <div className="space-y-6">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h1 className="font-display text-2xl font-semibold text-ink-900 sm:text-[1.75rem]">Business overview</h1>
-                <p className="mt-1 text-[15px] text-ink-500">How CloseLoop itself is doing. Numbers below are local demo data until Phase 2 connects a real database.</p>
+                <p className="mt-1 text-[15px] text-ink-500">
+                  {mode === "cloud" ? "How CloseLoop itself is doing, live from the database." : "How CloseLoop itself is doing. Numbers below are local demo data."}
+                </p>
               </div>
-              <Badge tone="warning">Demo data · local only</Badge>
+              {mode === "cloud" ? (
+                <Badge tone="success">{cloud?.lastSweep ? `Scheduler last ran ${formatShort(cloud.lastSweep.ran_at)}` : "Scheduler has not run yet"}</Badge>
+              ) : (
+                <Badge tone="warning">Demo data · local only</Badge>
+              )}
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -87,7 +111,23 @@ export default function AdminPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-ink-100">
-                      {accounts.map((a) => (
+                      {mode === "cloud" && cloud
+                        ? cloud.businesses.map((b) => (
+                            <tr key={b.id}>
+                              <td className="px-5 py-3">
+                                <p className="font-medium text-ink-900">{b.name}</p>
+                                <p className="text-xs text-ink-500">{b.email}</p>
+                              </td>
+                              <td className="px-3 py-3 text-ink-600">{businessTypeLabel(b.type as never)}</td>
+                              <td className="px-3 py-3 text-ink-800">—</td>
+                              <td className="px-3 py-3">
+                                <Badge tone="neutral">live</Badge>
+                              </td>
+                              <td className="px-3 py-3 text-ink-600">{formatShort(b.created_at)}</td>
+                            </tr>
+                          ))
+                        : null}
+                      {mode === "local" ? accounts.map((a) => (
                         <tr key={a.business.id}>
                           <td className="px-5 py-3">
                             <p className="font-medium text-ink-900">
@@ -109,7 +149,7 @@ export default function AdminPage() {
                           </td>
                           <td className="px-3 py-3 text-ink-600">{formatShort(a.business.createdAt)}</td>
                         </tr>
-                      ))}
+                      )) : null}
                     </tbody>
                   </table>
                 </div>

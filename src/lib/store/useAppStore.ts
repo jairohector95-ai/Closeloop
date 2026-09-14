@@ -5,7 +5,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import type { Account, BusinessType, ISODate, QuoteInput, Settings, Tone, WorkspaceData } from "../types";
 import { DEFAULT_SCHEDULE, STORAGE_KEY, TRIAL_DAYS } from "../constants";
 import { addDays, todayISO } from "../utils/date";
-import { createId } from "../utils/id";
+import { createId, createSecureToken } from "../utils/id";
 import { createContext } from "../domain/context";
 import * as quotes from "../domain/quotes";
 import * as status from "../domain/status";
@@ -14,7 +14,10 @@ import { recordInboundEmail, type InboundEmailInput } from "../domain/replies";
 import { getEmailProvider } from "../email/provider";
 import { buildDemoPlatformAccounts, buildDemoWorkspace } from "../demo/seed";
 import type { PlatformAccount } from "../metrics";
-import { createLocalStorageAdapter } from "../persistence/adapter";
+import { createLocalStorageAdapter, createMemoryAdapter } from "../persistence/adapter";
+import { diffWorkspace } from "../persistence/repository";
+import { isCloudMode } from "../server/mode";
+import { remote, SyncQueue, type RemoteWorkspace } from "./remote";
 
 export interface OnboardingInput {
   businessName: string;
@@ -30,22 +33,36 @@ export interface AutomationRunSummary {
   ranAt: string;
   fired: FiredFollowUp[];
   checked: number;
+  /** Cloud mode: problems reported by the scheduler (e.g. email provider not configured). */
+  errors?: string[];
 }
+
+export type RemoteStatus = "idle" | "loading" | "ready" | "unauthenticated" | "error";
+export type SyncStatus = "idle" | "saving" | "error";
 
 interface AppState {
   hydrated: boolean;
+  mode: "local" | "cloud";
   account: Account | null;
   data: WorkspaceData;
   demoAccounts: PlatformAccount[];
-  /** When set, the app behaves as if today were this date. Null = real today. */
+  /** When set, the app behaves as if today were this date. Null = real today. Local mode only. */
   simulatedDate: ISODate | null;
   lastRun: AutomationRunSummary | null;
+  /** Cloud mode: latest scheduler run for this business. */
+  lastSweep: RemoteWorkspace["lastSweep"];
+  remoteStatus: RemoteStatus;
+  syncStatus: SyncStatus;
+  syncError: string | null;
 
   // Derived helpers
   today: () => ISODate;
 
+  // Cloud mode
+  loadRemote: () => Promise<void>;
+
   // Account
-  completeOnboarding: (input: OnboardingInput) => void;
+  completeOnboarding: (input: OnboardingInput) => Promise<void>;
   updateBusiness: (patch: Partial<Pick<Account["business"], "name" | "ownerName" | "email" | "type">>) => void;
   updateSettings: (patch: Partial<Omit<Settings, "businessId">>) => void;
 
@@ -64,8 +81,8 @@ interface AppState {
   logReply: (input: InboundEmailInput) => { quoteId: string | null; stoppedSequence: boolean };
 
   // Automation & simulation
-  runAutomation: () => AutomationRunSummary;
-  advanceDay: (days?: number) => AutomationRunSummary;
+  runAutomation: () => Promise<AutomationRunSummary>;
+  advanceDay: (days?: number) => Promise<AutomationRunSummary>;
   resetClock: () => void;
   clearLastRun: () => void;
 
@@ -89,19 +106,67 @@ export const useAppStore = create<AppState>()(
         return createContext(account.business, account.settings, get().today());
       };
 
-      const mutate = (fn: (data: WorkspaceData) => WorkspaceData) => set((s) => ({ data: fn(s.data) }));
+      const syncQueue = new SyncQueue(
+        (changes) => remote.pushChanges(changes),
+        (status, error) => set({ syncStatus: status, syncError: error ?? null }),
+      );
+
+      /** Applies a pure domain update; in cloud mode the difference is queued for the server. */
+      const mutate = (fn: (data: WorkspaceData) => WorkspaceData) => {
+        const prev = get().data;
+        const next = fn(prev);
+        if (next === prev) return;
+        set({ data: next });
+        if (get().mode === "cloud") syncQueue.enqueue(diffWorkspace(prev, next));
+      };
 
       return {
         hydrated: false,
+        mode: isCloudMode ? "cloud" : "local",
         account: null,
         data: EMPTY_DATA,
         demoAccounts: [],
         simulatedDate: null,
         lastRun: null,
+        lastSweep: null,
+        remoteStatus: "idle",
+        syncStatus: "idle",
+        syncError: null,
 
-        today: () => get().simulatedDate ?? todayISO(),
+        today: () => (get().mode === "cloud" ? todayISO() : (get().simulatedDate ?? todayISO())),
 
-        completeOnboarding: (input) => {
+        loadRemote: async () => {
+          if (get().remoteStatus === "loading") return;
+          set({ remoteStatus: "loading" });
+          try {
+            const result = await remote.fetchWorkspace();
+            set({
+              account: result.account,
+              data: result.data ?? EMPTY_DATA,
+              lastSweep: result.lastSweep,
+              demoAccounts: [],
+              remoteStatus: "ready",
+              hydrated: true,
+            });
+          } catch (error) {
+            const status = error instanceof Error && "status" in error ? (error as { status: number }).status : 0;
+            set({ remoteStatus: status === 401 ? "unauthenticated" : "error", hydrated: true });
+          }
+        },
+
+        completeOnboarding: async (input) => {
+          if (get().mode === "cloud") {
+            const result = await remote.createAccount({
+              businessName: input.businessName,
+              ownerName: input.ownerName,
+              email: input.email,
+              type: input.type,
+              tone: input.tone,
+              loadDemoData: input.loadDemoData,
+            });
+            set({ account: result.account, data: result.data, remoteStatus: "ready", hydrated: true, simulatedDate: null, lastRun: null });
+            return;
+          }
           const now = new Date().toISOString();
           const today = todayISO();
           const userId = createId("user");
@@ -138,7 +203,7 @@ export const useAppStore = create<AppState>()(
           });
         },
 
-        updateBusiness: (patch) =>
+        updateBusiness: (patch) => {
           set((s) =>
             s.account
               ? {
@@ -149,10 +214,26 @@ export const useAppStore = create<AppState>()(
                   },
                 }
               : {},
-          ),
+          );
+          if (get().mode === "cloud") {
+            set({ syncStatus: "saving" });
+            remote
+              .patchAccount({ business: patch })
+              .then((r) => set({ account: r.account, syncStatus: "idle", syncError: null }))
+              .catch((e: Error) => set({ syncStatus: "error", syncError: e.message }));
+          }
+        },
 
-        updateSettings: (patch) =>
-          set((s) => (s.account ? { account: { ...s.account, settings: { ...s.account.settings, ...patch } } } : {})),
+        updateSettings: (patch) => {
+          set((s) => (s.account ? { account: { ...s.account, settings: { ...s.account.settings, ...patch } } } : {}));
+          if (get().mode === "cloud") {
+            set({ syncStatus: "saving" });
+            remote
+              .patchAccount({ settings: patch })
+              .then((r) => set({ account: r.account, syncStatus: "idle", syncError: null }))
+              .catch((e: Error) => set({ syncStatus: "error", syncError: e.message }));
+          }
+        },
 
         addQuote: (input) => {
           const result = quotes.addQuote(get().data, input, ctx());
@@ -174,11 +255,49 @@ export const useAppStore = create<AppState>()(
           return { quoteId: result.match.quoteId, stoppedSequence: result.stoppedSequence };
         },
 
-        runAutomation: () => {
+        runAutomation: async () => {
+          if (get().mode === "cloud") {
+            // The real scheduler runs server-side; "check now" triggers it for this business only.
+            const report = await remote.runSweep();
+            const fresh = await remote.fetchWorkspace();
+            const data = fresh.data ?? get().data;
+            const account = fresh.account ?? get().account;
+            const fired: FiredFollowUp[] = report.sentFollowUpIds.flatMap((id) => {
+              const followUp = data.followUps.find((f) => f.id === id);
+              const quote = followUp ? data.quotes.find((q) => q.id === followUp.quoteId) : undefined;
+              const customer = quote ? data.customers.find((c) => c.id === quote.customerId) : undefined;
+              if (!followUp || !quote || !customer || !account) return [];
+              return [
+                {
+                  quote,
+                  customer,
+                  followUp,
+                  message: {
+                    to: customer.email,
+                    toName: customer.name,
+                    fromName: `${account.business.name} via CloseLoop`,
+                    fromAddress: "",
+                    replyTo: "",
+                    subject: followUp.subject ?? "",
+                    body: followUp.body ?? "",
+                    html: "",
+                    idempotencyKey: followUp.idempotencyKey,
+                    inReplyTo: null,
+                    references: [],
+                    threadId: null,
+                    tags: {},
+                  },
+                },
+              ];
+            });
+            const summary: AutomationRunSummary = { ranOn: todayISO(), ranAt: report.ranAt, fired, checked: report.attempted, errors: report.errors };
+            set({ data, account, lastSweep: fresh.lastSweep, lastRun: summary });
+            return summary;
+          }
           const context = ctx();
           const result = runAutomation(get().data, context);
           // Phase 1: the simulated provider records the message and never sends anything.
-          result.fired.forEach((f) => void emailProvider.send(f.message, { from: "simulated@closeloop.local" }));
+          result.fired.forEach((f) => void emailProvider.send(f.message));
           const summary: AutomationRunSummary = {
             ranOn: context.today,
             ranAt: new Date().toISOString(),
@@ -190,14 +309,15 @@ export const useAppStore = create<AppState>()(
         },
 
         // Steps the simulated calendar forward one day at a time, running the
-        // engine each day exactly like the Phase 2 daily job will.
-        advanceDay: (days = 1) => {
+        // engine each day exactly like the production job does. Local mode only.
+        advanceDay: async (days = 1) => {
+          if (get().mode === "cloud") return get().runAutomation();
           const fired: FiredFollowUp[] = [];
           let checked = 0;
           let summary: AutomationRunSummary | null = null;
           for (let i = 0; i < days; i += 1) {
             set({ simulatedDate: addDays(get().today(), 1) });
-            summary = get().runAutomation();
+            summary = await get().runAutomation();
             fired.push(...summary.fired);
             checked = summary.checked;
           }
@@ -215,53 +335,62 @@ export const useAppStore = create<AppState>()(
         clearLastRun: () => set({ lastRun: null }),
 
         loadDemoData: () => {
-          const { account, data } = get();
+          const { account } = get();
           if (!account) return;
           const demo = buildDemoWorkspace(account, get().today());
-          set({
-            data: {
-              customers: [...data.customers, ...demo.customers],
-              quotes: [...data.quotes, ...demo.quotes],
-              followUps: [...data.followUps, ...demo.followUps],
-              timeline: [...data.timeline, ...demo.timeline],
-              inbound: [...data.inbound, ...demo.inbound],
-            },
-          });
+          mutate((data) => ({
+            customers: [...data.customers, ...demo.customers],
+            quotes: [...data.quotes, ...demo.quotes],
+            followUps: [...data.followUps, ...demo.followUps],
+            timeline: [...data.timeline, ...demo.timeline],
+            inbound: [...data.inbound, ...demo.inbound],
+          }));
         },
 
-        clearDemoData: () =>
-          set((s) => {
-            const demoQuoteIds = new Set(s.data.quotes.filter((q) => q.isDemo).map((q) => q.id));
-            const remainingQuotes = s.data.quotes.filter((q) => !demoQuoteIds.has(q.id));
+        clearDemoData: () => {
+          mutate((data) => {
+            const demoQuoteIds = new Set(data.quotes.filter((q) => q.isDemo).map((q) => q.id));
+            const remainingQuotes = data.quotes.filter((q) => !demoQuoteIds.has(q.id));
             const usedCustomers = new Set(remainingQuotes.map((q) => q.customerId));
             return {
-              data: {
-                customers: s.data.customers.filter((c) => usedCustomers.has(c.id)),
-                quotes: remainingQuotes,
-                followUps: s.data.followUps.filter((f) => !demoQuoteIds.has(f.quoteId)),
-                timeline: s.data.timeline.filter((e) => !demoQuoteIds.has(e.quoteId)),
-                inbound: s.data.inbound.filter((i) => !i.quoteId || !demoQuoteIds.has(i.quoteId)),
-              },
-              lastRun: null,
+              customers: data.customers.filter((c) => usedCustomers.has(c.id)),
+              quotes: remainingQuotes,
+              followUps: data.followUps.filter((f) => !demoQuoteIds.has(f.quoteId)),
+              timeline: data.timeline.filter((e) => !demoQuoteIds.has(e.quoteId)),
+              inbound: data.inbound.filter((i) => !i.quoteId || !demoQuoteIds.has(i.quoteId)),
             };
-          }),
+          });
+          set({ lastRun: null });
+        },
 
-        resetWorkspace: () => set({ account: null, data: EMPTY_DATA, demoAccounts: [], simulatedDate: null, lastRun: null }),
+        resetWorkspace: () => {
+          if (get().mode === "cloud") {
+            // Cloud: the account stays; every quote and its history is deleted.
+            mutate(() => EMPTY_DATA);
+            set({ lastRun: null });
+            return;
+          }
+          set({ account: null, data: EMPTY_DATA, demoAccounts: [], simulatedDate: null, lastRun: null });
+        },
         setHydrated: (value) => set({ hydrated: value }),
       };
     },
     {
       name: STORAGE_KEY,
-      version: 2,
-      storage: createJSONStorage(() => createLocalStorageAdapter()),
+      version: 3,
+      // Cloud mode keeps nothing in the browser; the server is the source of truth.
+      storage: createJSONStorage(() => (isCloudMode ? createMemoryAdapter() : createLocalStorageAdapter())),
       migrate: (persisted, version) => migratePersistedState(persisted, version),
-      partialize: (s) => ({
-        account: s.account,
-        data: s.data,
-        demoAccounts: s.demoAccounts,
-        simulatedDate: s.simulatedDate,
-        lastRun: s.lastRun,
-      }),
+      partialize: (s) =>
+        s.mode === "cloud"
+          ? {}
+          : {
+              account: s.account,
+              data: s.data,
+              demoAccounts: s.demoAccounts,
+              simulatedDate: s.simulatedDate,
+              lastRun: s.lastRun,
+            },
       onRehydrateStorage: () => (state) => {
         state?.setHydrated(true);
       },
@@ -291,6 +420,12 @@ export function migratePersistedState(persisted: unknown, version: number): unkn
       return { ...defaults, ...f };
     });
     state.data.quotes = (state.data.quotes ?? []).map((q) => ({ ...({ emailThreadId: null } as Record<string, unknown>), ...q }));
+  }
+  if (version < 3 && state.data) {
+    const quotes = (state.data.quotes ?? []) as Array<Record<string, unknown>>;
+    state.data.quotes = quotes.map((q) => (q.replyToken ? q : { ...q, replyToken: createSecureToken() })) as never;
+    const followUps = (state.data.followUps ?? []) as Array<Record<string, unknown>>;
+    state.data.followUps = followUps.map((f) => ({ ...({ recipientEmail: null } as Record<string, unknown>), ...f })) as never;
   }
   return persisted;
 }

@@ -2,27 +2,27 @@ import { describe, expect, it } from "vitest";
 import type { EmailMessage } from "@/lib/types";
 import { runFollowUpSweep } from "@/lib/jobs/sweep";
 import { InMemoryWorkspaceRepository, diffWorkspace, applyChangeSet, isEmptyChangeSet } from "@/lib/persistence/repository";
-import type { EmailProvider, SendOptions, SendResult } from "@/lib/email/provider";
+import type { EmailProvider, SendResult } from "@/lib/email/provider";
 import { addDays } from "@/lib/utils/date";
 import { ctxOn, followUpsOf, quoteOf, seedQuote, TODAY } from "./helpers";
 import { markReplied } from "@/lib/domain/status";
 
 class FakeProvider implements EmailProvider {
   readonly name = "fake";
-  readonly sent: Array<EmailMessage & { from: string }> = [];
+  readonly sent: EmailMessage[] = [];
   failNext = 0;
-  async send(message: EmailMessage, options: SendOptions): Promise<SendResult> {
+  async send(message: EmailMessage): Promise<SendResult> {
     if (this.failNext > 0) {
       this.failNext -= 1;
       return { ok: false, providerMessageId: null, messageId: null, threadId: null, error: "503 from provider", retryable: true };
     }
-    this.sent.push({ ...message, from: options.from });
+    this.sent.push(message);
     return { ok: true, providerMessageId: `p_${this.sent.length}`, messageId: `<${this.sent.length}@test>`, threadId: message.threadId ?? "t1" };
   }
 }
 
 function deps(repo: InMemoryWorkspaceRepository, provider: FakeProvider, day: string) {
-  return { repository: repo, provider, from: "follow-ups@mail.closeloop.app", contextFor: () => ctxOn(day) };
+  return { repository: repo, provider, contextFor: () => ctxOn(day) };
 }
 
 describe("follow-up sweep (production job)", () => {
@@ -33,7 +33,7 @@ describe("follow-up sweep (production job)", () => {
     const report = await runFollowUpSweep(deps(repo, provider, addDays(TODAY, 2)));
     expect(report).toMatchObject({ attempted: 1, sent: 1, failed: 0, skipped: 0 });
     expect(provider.sent[0].idempotencyKey).toBe(followUpsOf(data, quoteId)[0].idempotencyKey);
-    expect(provider.sent[0].from).toBe("follow-ups@mail.closeloop.app");
+    expect(provider.sent[0].fromAddress).toBe("followup@closeloop.local");
     const after = await repo.load();
     expect(followUpsOf(after, quoteId)[0].status).toBe("sent");
     expect(followUpsOf(after, quoteId)[0].providerMessageId).toBe("p_1");

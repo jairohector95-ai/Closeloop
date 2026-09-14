@@ -1,6 +1,7 @@
 import type { WorkspaceData } from "../types";
 import type { DomainContext } from "../domain/context";
-import { buildOutboundMessage, claimFollowUp, recordDelivery, recordFailure, selectDueFollowUps } from "../domain/automation";
+import { buildOutboundMessage, cancelClaimedFollowUp, claimFollowUp, recordDelivery, recordFailure, selectDueFollowUps } from "../domain/automation";
+import { automationAllowed } from "../domain/status";
 import { defaultEmailGenerator, type EmailGenerator } from "../email/generator";
 import type { EmailProvider } from "../email/provider";
 import type { WorkspaceRepository } from "../persistence/repository";
@@ -17,10 +18,10 @@ export interface SweepDeps {
   repository: WorkspaceRepository;
   provider: EmailProvider;
   generator?: EmailGenerator;
-  /** Sender address for the provider (Phase A: a CloseLoop-verified domain). */
-  from: string;
   /** Builds the context for a business; production reads business + settings from the DB. */
   contextFor: (data: WorkspaceData) => DomainContext;
+  /** Demo quotes have fictional example.com customers; a real provider must never email them. */
+  skipDemoQuotes?: boolean;
 }
 
 export interface SweepReport {
@@ -29,16 +30,18 @@ export interface SweepReport {
   failed: number;
   skipped: number;
   errors: string[];
+  sentFollowUpIds: string[];
 }
 
 export async function runFollowUpSweep(deps: SweepDeps): Promise<SweepReport> {
   const generator = deps.generator ?? defaultEmailGenerator;
-  const report: SweepReport = { attempted: 0, sent: 0, failed: 0, skipped: 0, errors: [] };
+  const report: SweepReport = { attempted: 0, sent: 0, failed: 0, skipped: 0, errors: [], sentFollowUpIds: [] };
 
   const data = await deps.repository.load();
   const ctx = deps.contextFor(data);
 
   for (const due of selectDueFollowUps(data, ctx)) {
+    if (deps.skipDemoQuotes && due.quote.isDemo) continue;
     report.attempted += 1;
 
     // Atomic claim: only one worker wins. In Postgres this is
@@ -49,25 +52,34 @@ export async function runFollowUpSweep(deps: SweepDeps): Promise<SweepReport> {
       continue;
     }
 
+    // Re-read after the claim. If a reply (or the owner) stopped the quote
+    // between our first read and the claim, release the claim and send nothing.
     const current = await deps.repository.load();
     const followUp = current.followUps.find((f) => f.id === due.followUp.id);
-    if (!followUp) {
+    const quote = current.quotes.find((q) => q.id === due.quote.id);
+    if (!followUp || !quote || followUp.status !== "sending") {
+      report.skipped += 1;
+      continue;
+    }
+    if (!automationAllowed(quote)) {
+      await deps.repository.save(cancelClaimedFollowUp(current, followUp.id), current);
       report.skipped += 1;
       continue;
     }
 
-    const message = buildOutboundMessage(current, due.quote, due.customer, followUp, ctx, generator);
-    const result = await deps.provider.send(message, { from: deps.from });
+    const message = buildOutboundMessage(current, quote, due.customer, followUp, ctx, generator);
+    const result = await deps.provider.send(message);
 
     if (result.ok) {
       const next = recordDelivery(
         current,
         followUp.id,
-        { providerMessageId: result.providerMessageId, messageId: result.messageId, threadId: result.threadId, subject: message.subject, body: message.body },
+        { providerMessageId: result.providerMessageId, messageId: result.messageId, threadId: result.threadId, subject: message.subject, body: message.body, recipientEmail: message.to },
         ctx,
       );
       await deps.repository.save(next, current);
       report.sent += 1;
+      report.sentFollowUpIds.push(followUp.id);
     } else {
       const next = recordFailure(current, followUp.id, result.error ?? "Unknown provider error", ctx);
       await deps.repository.save(next, current);

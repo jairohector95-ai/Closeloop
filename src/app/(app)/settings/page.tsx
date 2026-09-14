@@ -37,6 +37,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const { toast } = useToast();
   const account = useAppStore((s) => s.account);
+  const mode = useAppStore((s) => s.mode);
   const quotes = useAppStore((s) => s.data.quotes);
   const updateBusiness = useAppStore((s) => s.updateBusiness);
   const updateSettings = useAppStore((s) => s.updateSettings);
@@ -273,7 +274,7 @@ export default function SettingsPage() {
                   <Database className="h-4 w-4 text-ink-400" /> Demo data
                 </span>
               }
-              description="Sample quotes so you can explore. Everything is stored in this browser only."
+              description={mode === "cloud" ? "Sample quotes so you can explore. Demo quotes are never emailed." : "Sample quotes so you can explore. Everything is stored in this browser only."}
             />
             <CardBody className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               {demoCount > 0 ? (
@@ -300,7 +301,7 @@ export default function SettingsPage() {
                 </Button>
               )}
               <Button variant="ghost" className="text-danger-700 hover:bg-danger-50" icon={<RotateCcw className="h-4 w-4" />} onClick={() => setConfirmReset(true)}>
-                Reset everything
+                {mode === "cloud" ? "Delete all quotes" : "Reset everything"}
               </Button>
             </CardBody>
           </Card>
@@ -310,8 +311,12 @@ export default function SettingsPage() {
       <Modal
         open={confirmReset}
         onClose={() => setConfirmReset(false)}
-        title="Reset CloseLoop?"
-        description="This removes your business profile and every quote from this browser and takes you back to onboarding."
+        title={mode === "cloud" ? "Delete every quote?" : "Reset CloseLoop?"}
+        description={
+          mode === "cloud"
+            ? "Every quote, follow-up and reply in your account will be deleted. Your business profile stays. This can't be undone."
+            : "This removes your business profile and every quote from this browser and takes you back to onboarding."
+        }
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirmReset(false)}>
@@ -321,10 +326,11 @@ export default function SettingsPage() {
               variant="danger"
               onClick={() => {
                 resetWorkspace();
-                router.push("/onboarding");
+                setConfirmReset(false);
+                if (mode === "local") router.push("/onboarding");
               }}
             >
-              Reset everything
+              {mode === "cloud" ? "Delete all quotes" : "Reset everything"}
             </Button>
           </>
         }

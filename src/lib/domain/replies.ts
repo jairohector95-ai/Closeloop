@@ -12,16 +12,19 @@ import { markReplied } from "./status";
  * email into `InboundEmailInput` and calls `recordInboundEmail`. Matching is
  * done here, in one place, in this order:
  *
- *  1. In-Reply-To / References header matches the Message-ID of a follow-up we sent.
- *  2. Thread id matches the quote's provider thread.
- *  3. Sender email matches a customer with exactly one quote that is still
- *     active or paused (most recently sent wins if several).
+ *  1. The secure reply token in the address the email was sent to.
+ *  2. In-Reply-To / References header matches the Message-ID of a follow-up we sent.
+ *  3. Thread id matches the quote's provider thread.
+ *  4. Sender email matches a customer with exactly ONE quote that is still
+ *     active or paused. Two or more candidates → no match (never guess).
  *
  * A matched reply stops the sequence immediately via `markReplied`.
  */
 
 export interface InboundEmailInput {
   source: InboundSource;
+  /** Token parsed from the reply routing address (reply+<token>@…), when present. */
+  replyToken?: string | null;
   fromEmail: string;
   fromName?: string | null;
   subject?: string | null;
@@ -33,7 +36,7 @@ export interface InboundEmailInput {
   receivedAt?: string;
 }
 
-export type MatchReason = "in_reply_to" | "thread" | "sender" | "none";
+export type MatchReason = "reply_token" | "in_reply_to" | "thread" | "sender" | "ambiguous" | "none";
 
 export interface ReplyMatch {
   quoteId: string | null;
@@ -47,6 +50,12 @@ function normalizeMessageId(id: string | null | undefined): string | null {
 }
 
 export function matchInboundEmail(data: WorkspaceData, input: InboundEmailInput, businessId: string): ReplyMatch {
+  // 1. The secure reply-routing token is authoritative.
+  if (input.replyToken) {
+    const quote = data.quotes.find((q) => q.businessId === businessId && q.replyToken === input.replyToken);
+    if (quote) return { quoteId: quote.id, reason: "reply_token" };
+  }
+
   const candidates = new Set<string>();
   const inReplyTo = normalizeMessageId(input.inReplyTo);
   if (inReplyTo) candidates.add(inReplyTo);
@@ -73,7 +82,9 @@ export function matchInboundEmail(data: WorkspaceData, input: InboundEmailInput,
     const open = data.quotes
       .filter((q) => q.businessId === businessId && customerIds.has(q.customerId) && (q.status === "follow_up_scheduled" || q.status === "awaiting_reply" || q.status === "paused"))
       .sort((a, b) => (a.sentAt < b.sentAt ? 1 : -1));
-    if (open[0]) return { quoteId: open[0].id, reason: "sender" };
+    // 4. Sender fallback only when there is exactly one candidate. Never guess.
+    if (open.length === 1) return { quoteId: open[0].id, reason: "sender" };
+    if (open.length > 1) return { quoteId: null, reason: "ambiguous" };
   }
 
   return { quoteId: null, reason: "none" };
@@ -107,6 +118,8 @@ export interface RecordInboundResult {
   match: ReplyMatch;
   /** True when this email changed a quote to "replied". */
   stoppedSequence: boolean;
+  /** True when this Message-ID had already been recorded (webhook retry). */
+  duplicate?: boolean;
 }
 
 export function recordInboundEmail(data: WorkspaceData, input: InboundEmailInput, ctx: DomainContext): RecordInboundResult {
@@ -116,7 +129,7 @@ export function recordInboundEmail(data: WorkspaceData, input: InboundEmailInput
   // Idempotent on Message-ID: webhooks and pollers may deliver the same email twice.
   if (messageId) {
     const existing = data.inbound.find((i) => i.businessId === businessId && i.messageId === messageId);
-    if (existing) return { data, inbound: existing, match: { quoteId: existing.quoteId, reason: existing.quoteId ? "in_reply_to" : "none" }, stoppedSequence: false };
+    if (existing) return { data, inbound: existing, match: { quoteId: existing.quoteId, reason: existing.quoteId ? "reply_token" : "none" }, stoppedSequence: false, duplicate: true };
   }
 
   const match = matchInboundEmail(data, input, businessId);

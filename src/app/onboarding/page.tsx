@@ -19,9 +19,20 @@ const STEPS = ["Your business", "Your voice", "Ready"];
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const mode = useAppStore((s) => s.mode);
   const hydrated = useAppStore((s) => s.hydrated);
   const hasAccount = useAppStore((s) => s.account !== null);
+  const remoteStatus = useAppStore((s) => s.remoteStatus);
+  const loadRemote = useAppStore((s) => s.loadRemote);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (mode === "cloud" && remoteStatus === "idle") void loadRemote();
+  }, [mode, remoteStatus, loadRemote]);
+  useEffect(() => {
+    if (mode === "cloud" && remoteStatus === "unauthenticated") router.replace("/login?next=/onboarding");
+  }, [mode, remoteStatus, router]);
 
   const [step, setStep] = useState(0);
   const [values, setValues] = useState({ businessName: "", ownerName: "", email: "", type: "painting" as BusinessType });
@@ -44,10 +55,16 @@ export default function OnboardingPage() {
     setStep((s) => Math.min(s + 1, STEPS.length - 1));
   };
 
-  const finish = () => {
+  const finish = async () => {
     setSubmitting(true);
-    completeOnboarding({ ...values, tone, loadDemoData: loadDemo });
-    router.push("/dashboard");
+    setSubmitError(null);
+    try {
+      await completeOnboarding({ ...values, tone, loadDemoData: loadDemo });
+      router.push("/dashboard");
+    } catch (error) {
+      setSubmitting(false);
+      setSubmitError(error instanceof Error ? error.message : "Something went wrong. Please try again.");
+    }
   };
 
   const preview = renderFollowUpEmail({
@@ -173,14 +190,21 @@ export default function OnboardingPage() {
                 <input type="checkbox" checked={loadDemo} onChange={(e) => setLoadDemo(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-ink-300 accent-ink-900" />
                 <span>
                   <span className="block text-sm font-medium text-ink-900">Start with sample quotes</span>
-                  <span className="block text-sm text-ink-500">A dozen fictional estimates so you can see the dashboard in action. Remove them any time from Settings.</span>
+                  <span className="block text-sm text-ink-500">
+                  A dozen fictional estimates so you can see the dashboard in action. They are never emailed. Remove them any time from Settings.
+                </span>
                 </span>
               </label>
+              {submitError ? (
+                <p role="alert" className="mt-5 rounded-xl border border-danger-100 bg-danger-50 px-4 py-3 text-sm text-danger-700">
+                  {submitError}
+                </p>
+              ) : null}
               <div className="mt-7 flex items-center justify-between">
                 <Button type="button" variant="ghost" onClick={() => setStep(1)} icon={<ArrowLeft className="h-4 w-4" />}>
                   Back
                 </Button>
-                <Button type="button" size="lg" onClick={finish} loading={submitting} icon={<ArrowRight className="h-4 w-4" />}>
+                <Button type="button" size="lg" onClick={() => void finish()} loading={submitting} icon={<ArrowRight className="h-4 w-4" />}>
                   Open my dashboard
                 </Button>
               </div>

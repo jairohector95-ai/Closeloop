@@ -115,7 +115,8 @@ Ordering rationale: A gives every customer the core promise on day one with zero
 - **Delivered**: everything in `docs/current-architecture.md`.
 - **Verification**: 51 tests, clean build, browser walkthrough.
 
-### Phase 2 — Real database and authentication
+### Phase 2 — Real database, authentication, real email and reply detection (code complete; awaiting credentials)
+- **Delivered**: Supabase schema with RLS and atomic functions, email/password auth, cloud persistence behind the existing repository interface, Resend outbound with per-quote reply routing, Resend Inbound webhook with signature verification and dedupe, server-side scheduler route, SQL and unit tests. Owner checklist: `docs/phase-2-setup.md`.
 - **Goal**: many contractors, each with their own private data, on any device.
 - **Tasks**: create Supabase project; apply `supabase/migrations/0001_init.sql`; implement `SupabaseWorkspaceRepository` (`load`, `save` via `diffWorkspace` upserts in one RPC/transaction, `tryClaimFollowUp` via `claim_follow_up()`); Supabase Auth with magic link (+ Google sign-in); replace `AppGate` with a session check; onboarding writes `businesses/settings/subscriptions`; move `useAppStore` reads to server data (React Query or server components) while keeping the domain functions; migrate demo-data loader to server side; `/admin` gated by an `is_admin` claim.
 - **Dependencies**: Supabase account (free tier), a deploy target (Vercel).

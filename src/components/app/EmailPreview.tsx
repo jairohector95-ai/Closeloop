@@ -5,12 +5,14 @@ export function EmailPreview({
   email,
   to,
   from,
+  replyTo,
   className,
   compact = false,
 }: {
   email: GeneratedEmail;
   to?: string;
   from?: string;
+  replyTo?: string;
   className?: string;
   compact?: boolean;
 }) {
@@ -27,6 +29,12 @@ export function EmailPreview({
           <p>
             <span className="inline-block w-12 text-ink-400">To</span>
             <span className="text-ink-700">{to}</span>
+          </p>
+        ) : null}
+        {replyTo ? (
+          <p className="truncate">
+            <span className="inline-block w-12 text-ink-400">Reply</span>
+            <span className="text-ink-500">{replyTo}</span>
           </p>
         ) : null}
         <p>

@@ -5,6 +5,8 @@ import { CLAIM_TIMEOUT_MINUTES, MAX_SEND_ATTEMPTS, RETRY_BACKOFF_MINUTES } from 
 import type { DomainContext } from "./context";
 import { deriveActiveStatus, makeEvent, pendingFollowUps, sentFollowUps } from "./quotes";
 import { automationAllowed } from "./status";
+import { renderEmailHtml } from "../email/html";
+import { replyAddressFor } from "../email/routing";
 
 /**
  * The automation engine.
@@ -42,6 +44,15 @@ export interface DeliveryResult {
   threadId: string | null;
   subject: string;
   body: string;
+  recipientEmail?: string | null;
+}
+
+/** Releases a claimed follow-up without sending (the quote stopped between claim and send). */
+export function cancelClaimedFollowUp(data: WorkspaceData, followUpId: string): WorkspaceData {
+  return {
+    ...data,
+    followUps: data.followUps.map((f) => (f.id === followUpId && f.status === "sending" ? { ...f, status: "cancelled" as const, claimedAt: null } : f)),
+  };
 }
 
 export interface FiredFollowUp {
@@ -81,10 +92,12 @@ export function buildOutboundMessage(data: WorkspaceData, quote: Quote, customer
   return {
     to: customer.email,
     toName: customer.name,
-    fromName: `${ctx.business.ownerName} at ${ctx.business.name}`,
-    replyTo: ctx.business.email,
+    fromName: `${ctx.business.name} ${ctx.email.brandSuffix}`.trim(),
+    fromAddress: ctx.email.fromAddress,
+    replyTo: replyAddressFor(quote.replyToken, ctx.email.replyDomain),
     subject: email.subject,
     body: email.body,
+    html: renderEmailHtml(email.body),
     idempotencyKey: followUp.idempotencyKey,
     inReplyTo: references.length ? references[references.length - 1] : null,
     references,
@@ -155,6 +168,7 @@ export function recordDelivery(data: WorkspaceData, followUpId: string, result: 
   if (!followUp || followUp.status === "sent") return data;
   const quote = data.quotes.find((q) => q.id === followUp.quoteId);
   if (!quote) return data;
+  const customer = data.customers.find((c) => c.id === quote.customerId);
 
   const sent: FollowUp = {
     ...followUp,
@@ -165,6 +179,7 @@ export function recordDelivery(data: WorkspaceData, followUpId: string, result: 
     lastError: null,
     subject: result.subject,
     body: result.body,
+    recipientEmail: result.recipientEmail ?? customer?.email ?? null,
     providerMessageId: result.providerMessageId,
     messageId: result.messageId,
   };

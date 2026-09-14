@@ -24,14 +24,9 @@ export interface SendResult {
   retryable?: boolean;
 }
 
-export interface SendOptions {
-  /** Verified sender address the provider is allowed to send from. */
-  from: string;
-}
-
 export interface EmailProvider {
   readonly name: string;
-  send(message: EmailMessage, options: SendOptions): Promise<SendResult>;
+  send(message: EmailMessage): Promise<SendResult>;
 }
 
 /** Deterministic Message-ID derived from the idempotency key, so retries reuse the same id. */
@@ -47,10 +42,10 @@ export function formatAddress(name: string, email: string): string {
 
 export class SimulatedEmailProvider implements EmailProvider {
   readonly name = "simulated";
-  readonly outbox: Array<EmailMessage & { from: string }> = [];
+  readonly outbox: EmailMessage[] = [];
 
-  async send(message: EmailMessage, options: SendOptions): Promise<SendResult> {
-    this.outbox.push({ ...message, from: options.from });
+  async send(message: EmailMessage): Promise<SendResult> {
+    this.outbox.push(message);
     return {
       ok: true,
       providerMessageId: `sim_${this.outbox.length}`,
@@ -70,8 +65,8 @@ export class ResendEmailProvider implements EmailProvider {
     private readonly fetchImpl: Fetch = fetch,
   ) {}
 
-  async send(message: EmailMessage, options: SendOptions): Promise<SendResult> {
-    const messageId = messageIdFor(message, options.from.split("@")[1] ?? "closeloop.app");
+  async send(message: EmailMessage): Promise<SendResult> {
+    const messageId = messageIdFor(message, message.fromAddress.split("@")[1] ?? "closeloop.app");
     const headers: Record<string, string> = { "Message-ID": messageId };
     if (message.inReplyTo) headers["In-Reply-To"] = message.inReplyTo;
     if (message.references.length) headers.References = message.references.join(" ");
@@ -85,11 +80,12 @@ export class ResendEmailProvider implements EmailProvider {
           "Idempotency-Key": message.idempotencyKey,
         },
         body: JSON.stringify({
-          from: formatAddress(message.fromName, options.from),
+          from: formatAddress(message.fromName, message.fromAddress),
           to: [formatAddress(message.toName, message.to)],
           reply_to: message.replyTo,
           subject: message.subject,
           text: message.body,
+          html: message.html,
           headers,
           tags: Object.entries(message.tags).map(([name, value]) => ({ name, value })),
         }),
@@ -115,8 +111,8 @@ export class PostmarkEmailProvider implements EmailProvider {
     private readonly messageStream = "outbound",
   ) {}
 
-  async send(message: EmailMessage, options: SendOptions): Promise<SendResult> {
-    const messageId = messageIdFor(message, options.from.split("@")[1] ?? "closeloop.app");
+  async send(message: EmailMessage): Promise<SendResult> {
+    const messageId = messageIdFor(message, message.fromAddress.split("@")[1] ?? "closeloop.app");
     const headers: Array<{ Name: string; Value: string }> = [{ Name: "Message-ID", Value: messageId }];
     if (message.inReplyTo) headers.push({ Name: "In-Reply-To", Value: message.inReplyTo });
     if (message.references.length) headers.push({ Name: "References", Value: message.references.join(" ") });
@@ -126,11 +122,12 @@ export class PostmarkEmailProvider implements EmailProvider {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json", "X-Postmark-Server-Token": this.serverToken },
         body: JSON.stringify({
-          From: formatAddress(message.fromName, options.from),
+          From: formatAddress(message.fromName, message.fromAddress),
           To: formatAddress(message.toName, message.to),
           ReplyTo: message.replyTo,
           Subject: message.subject,
           TextBody: message.body,
+          HtmlBody: message.html,
           MessageStream: this.messageStream,
           Headers: headers,
           Tag: message.tags.followUpId ?? undefined,
